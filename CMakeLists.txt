@@ -62,7 +62,7 @@ find_package(liquidvr)
 find_package(OpenGL)
 find_package(OpenGLES2)
 find_package(GLEW)
-find_package(SDL2)
+find_package(SDL2 REQUIRED)
 if(WIN32)
 	# Well, redistributables technically, not tools, but close enough.
 	find_package(WindowsSDK REQUIRED COMPONENTS tools)
