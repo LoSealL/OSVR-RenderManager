@@ -681,11 +681,18 @@ if(WIN32)
     set(LIB_SHARED_VRWN vrwnC)
     set(LIB_SHARED_ENCP VREnc_Plugin)
   endif()
+  find_library(VR_LIB_VRWN
+    NAME ${LIB_SHARED_VRWN}.lib
+    PATHS ${VR_WIRELESS}/lib/${ARCH_DIR}
+  )
+  find_library(VR_LIB_ENCP
+    NAME ${LIB_SHARED_ENCP}.lib
+    PATHS ${VR_WIRELESS}/lib/${ARCH_DIR}
+  )
   target_link_libraries(osvrRenderManager PRIVATE
-      ${VR_WIRELESS}/lib/${ARCH_DIR}/${LIB_SHARED_VRWN}.lib
-      ${VR_WIRELESS}/lib/${ARCH_DIR}/${LIB_SHARED_ENCP}.lib)
-  set(VR_DEP_VRWN)
-  set(VR_DEP_ENCP)
+      ${VR_LIB_VRWN}
+      ${VR_LIB_ENCP}
+  )
   find_file(VR_DEP_VRWN
     NAME ${LIB_SHARED_VRWN}.dll
     PATHS ${VR_WIRELESS}/bin/${ARCH_DIR}

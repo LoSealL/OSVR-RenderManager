@@ -786,7 +786,7 @@ namespace renderkit {
             codec,
             format,
             temp_dev);
-          assert(ret == 0);
+          if (ret < 0) return false;
           is_encoder_inited = true;
           if (dump_how_many_images > 0) VRENC::VREnc_DumpEnable(".");
           offload_evt = CreateEvent(nullptr, false, false, nullptr);
