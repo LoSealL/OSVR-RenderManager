@@ -39,7 +39,9 @@ Sensics, Inc.
 #include <Eigen/Geometry>
 #include <vrpn_Shared.h>
 
-#include <set>
+#ifdef WVR
+#include <atlbase.h>
+#endif
 
 static const char* distortionVertexShader =
     "cbuffer cbPerObject"
@@ -182,57 +184,6 @@ namespace renderkit {
         delete m_library.D3D11;
     }
 
-    bool RenderManagerD3D11Base::PresentRenderBuffersInternal(
-        const std::vector<RenderBuffer>& buffers,
-        const std::vector<RenderInfo>& renderInfoUsed,
-        const RenderParams& renderParams,
-        const std::vector<OSVR_ViewportDescription>& normalizedCroppingViewports,
-        bool flipInY) {
-
-        HRESULT hr;
-        {
-            std::set<ID3D11Texture2D*> lockedTextures;
-            for (size_t i = 0; i < buffers.size(); i++) {
-                auto colorBuffer = buffers[i].D3D11->colorBuffer;
-                if (lockedTextures.find(colorBuffer) == lockedTextures.end()) {
-                    lockedTextures.insert(colorBuffer);
-                    D3D11_TEXTURE2D_DESC desc = { 0 };
-                    colorBuffer->GetDesc(&desc);
-                    if ((desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX) == D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX) {
-                        IDXGIKeyedMutex* mutex = nullptr;
-                        hr = colorBuffer->QueryInterface(__uuidof(IDXGIKeyedMutex), (LPVOID*)&mutex);
-                        if (!FAILED(hr) && mutex != nullptr) {
-                            hr = mutex->AcquireSync(0, 0); // ignore failure
-                        }
-                    }
-                }
-            }
-        }
-
-        bool ret = RenderManager::PresentRenderBuffersInternal(buffers, renderInfoUsed, renderParams, normalizedCroppingViewports, flipInY);
-
-        {
-            std::set<ID3D11Texture2D*> unlockedTextures;
-            for (int i = static_cast<int>(buffers.size()) - 1; i >= 0; i--) {
-                auto colorBuffer = buffers[i].D3D11->colorBuffer;
-                if (unlockedTextures.find(colorBuffer) == unlockedTextures.end()) {
-                    unlockedTextures.insert(colorBuffer);
-                    D3D11_TEXTURE2D_DESC desc = { 0 };
-                    colorBuffer->GetDesc(&desc);
-                    if ((desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX) == D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX) {
-                        IDXGIKeyedMutex* mutex = nullptr;
-                        hr = colorBuffer->QueryInterface(__uuidof(IDXGIKeyedMutex), (LPVOID*)&mutex);
-                        if (!FAILED(hr) && mutex != nullptr) {
-                            hr = mutex->ReleaseSync(0); // ignore failure
-                        }
-                    }
-                }
-            }
-        }
-
-        return ret;
-    }
-
     bool RenderManagerD3D11Base::SetDeviceAndContext() {
       //======================================================
       // Create the D3D11 context that is used to draw things into the window
@@ -262,7 +213,10 @@ namespace renderkit {
         }
     	m_log->info("RenderManagerD3D11Base::SetDeviceAndContext: Created D3D11 device");
       }
-
+#ifdef WVR
+      CComQIPtr<ID3D10Multithread> mt(m_D3D11Context);
+      if (mt) mt->SetMultithreadProtected(true);
+#endif
       //======================================================
       // Construct our completion query that will be used to
       // wait for rendering completion.

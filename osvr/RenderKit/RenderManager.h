@@ -23,7 +23,8 @@ Russ Taylor <russ@sensics.com>
 // limitations under the License.
 
 #pragma once
-
+// Enable Wireless VR Hacked Mode
+#define WVR
 // Internal Includes
 #include <osvr/RenderKit/Export.h>
 #include "osvr_display_configuration.h"

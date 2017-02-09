@@ -1,4 +1,4 @@
-build
+[Bb]uild
 *.msi
 installer/osvrRenderManager-cache/*
 *.TMP

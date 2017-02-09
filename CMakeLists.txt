@@ -668,3 +668,38 @@ include(CTest)
 enable_testing()
 
 add_subdirectory(tests)
+
+if(WIN32)
+  message("Should specificly assign the path to VR_WIRELESS")
+  set(VR_WIRELESS "d:/Works/VR/Wireless-VR/common" CACHE PATH "Path to Wireless-VR directory.")
+  option(BUILD_DEBUG "Build Debugs" ON)
+  target_include_directories(osvrRenderManager PRIVATE ${VR_WIRELESS}/src)
+  if(BUILD_DEBUG)
+    set(LIB_SHARED_VRWN vrwnCd)
+    set(LIB_SHARED_ENCP VREnc_Plugind)
+  else()
+    set(LIB_SHARED_VRWN vrwnC)
+    set(LIB_SHARED_ENCP VREnc_Plugin)
+  endif()
+  target_link_libraries(osvrRenderManager PRIVATE
+      ${VR_WIRELESS}/lib/${ARCH_DIR}/${LIB_SHARED_VRWN}.lib
+      ${VR_WIRELESS}/lib/${ARCH_DIR}/${LIB_SHARED_ENCP}.lib)
+  set(VR_DEP_VRWN)
+  set(VR_DEP_ENCP)
+  find_file(VR_DEP_VRWN
+    NAME ${LIB_SHARED_VRWN}.dll
+    PATHS ${VR_WIRELESS}/bin/${ARCH_DIR}
+    DOC "wireless dependencies"
+  )
+  find_file(VR_DEP_ENCP
+    NAME ${LIB_SHARED_ENCP}.dll
+    PATHS ${VR_WIRELESS}/bin/${ARCH_DIR}
+    DOC "encoder dependencies"
+  )
+  foreach(_dep ${VR_DEP_VRWN} ${VR_DEP_ENCP})
+    add_custom_command(TARGET osvrRenderManager POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy ${_dep} $<TARGET_FILE_DIR:osvrRenderManager>
+      COMMENT "copy depencies ${_dep} dll"
+      VERBATIM)
+  endforeach()
+endif()

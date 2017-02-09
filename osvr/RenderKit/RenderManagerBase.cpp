@@ -93,7 +93,18 @@ Russ Taylor <russ@sensics.com>
 #include <memory>
 #include <map>
 #include <algorithm>
+#include <string>
 
+// Hacked includes
+#ifdef WVR
+// jpeg encoder
+#include <VREncoder/vrenc_plugin.h>
+// wireless interface
+#ifndef VRAPI_IMPORT
+#define VRAPI_IMPORT
+#endif
+#include <vrwnshared/vrwnC.h>
+#endif
 
 // @todo Consider pulling this function into Core.
 /// @brief Predict a future pose based on initial and velocity.
@@ -268,7 +279,20 @@ static void OSVR_from_q(OSVR_PoseState& pose, const q_xyz_quat_type& xform) {
 
 namespace osvr {
 namespace renderkit {
+#ifdef WVR
+    bool is_encoder_inited;
+    bool is_needed_texcopy;
+    int dump_how_many_images;
+    int vrwn_handle_intex;
+    HANDLE offload_evt;
+    vrwn::FrameInfo frameinfo;
+    std::thread thread_offloading;
+    std::vector<ID3D11Texture2D*> dup_eye_buffer;
 
+    inline void UpdateCopyTexture(const std::vector<RenderBuffer> &buffers);
+    inline void UpdateRenderInfo(const std::vector<RenderInfo> &renderInfoUsed);
+    void OffloadMainLoop();
+#endif
     RenderManager::RenderManager(
         OSVR_ClientContext context,
         const ConstructorParameters& p) {
@@ -321,6 +345,12 @@ namespace renderkit {
 
         // We haven't yet registered our render buffers, so can't present them
         m_renderBuffersRegistered = false;
+#ifdef WVR
+        is_encoder_inited = false;
+        is_needed_texcopy = true;
+        dump_how_many_images = 0;
+        dup_eye_buffer.clear();
+#endif
     }
 
     bool RenderManager::SetDisplayCallback(DisplayCallback callback,
@@ -437,7 +467,16 @@ namespace renderkit {
             m_log->info("RenderManager deconstructed");
             m_log->flush();
         }
-
+#ifdef WVR
+        is_encoder_inited = false;
+        thread_offloading.join();
+        VRENC::VREnc_Close();
+        for(auto &i : dup_eye_buffer) {
+          if (i) i->Release();
+          i = nullptr;
+        }
+        dup_eye_buffer.clear();
+#endif
         // Unregister any remaining callback handlers for devices that
         // are set to update our transformation matrices.
         while (m_callbacks.size() > 0) {
@@ -687,6 +726,76 @@ namespace renderkit {
     bool RenderManager::RegisterRenderBuffersInternal(
         const std::vector<RenderBuffer>& buffers,
         bool /* appWillNotOverwriteBeforeNewPresent */) {
+#ifdef WVR
+        if (!is_encoder_inited) {
+          std::ifstream cfg_file("com_vr_rendermanager.config.json");
+          Json::Value root;
+          Json::Reader reader;
+          INT quality = 100;
+          UINT codec = VRENC::JPEG;
+          UINT format = VRENC::RGB4;
+          ID3D11Device *temp_dev = nullptr;
+          if (cfg_file.is_open()) {
+            reader.parse(cfg_file, root, false);
+            quality = root["quality"].asInt();
+            if (root["codec"].asString() == "JPEG") {
+              codec = VRENC::JPEG;
+            } else if (root["codec"].asString() == "H264") {
+              codec = VRENC::AVC;
+            } else if (root["codec"].asString() == "AVC") {
+              codec = VRENC::AVC;
+            }
+            if (root["format"].asString() == "RGB4") {
+              format = VRENC::RGB4;
+            } else if (root["format"].asString() == "NV12") {
+              format = VRENC::NV12;
+            }
+            dump_how_many_images = root["dump"].asInt();
+            cfg_file.close();
+          }
+          D3D11_TEXTURE2D_DESC rb_desc = {};
+          buffers[0].D3D11->colorBuffer->GetDesc(&rb_desc);
+          buffers[0].D3D11->colorBuffer->GetDevice(&temp_dev);
+          switch (rb_desc.Format) {
+          case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+            rb_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            is_needed_texcopy = true;
+            break;
+          case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+            rb_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            is_needed_texcopy = true;
+            break;
+          default:
+            //is_needed_texcopy = false;
+            break;
+          }
+          for (auto &rb : buffers) {
+            ID3D11Texture2D *tex;
+            if (is_needed_texcopy) {
+              temp_dev->CreateTexture2D(&rb_desc, nullptr, &tex);
+              dup_eye_buffer.push_back(tex);
+              VRENC::VREnc_SetSharedTexture(tex);
+            } else {
+              VRENC::VREnc_SetSharedTexture(rb.D3D11->colorBuffer);
+            }
+          }
+          int ret = VRENC::VREnc_Init(
+            rb_desc.Width,
+            rb_desc.Height,
+            quality,
+            codec,
+            format,
+            temp_dev);
+          assert(ret == 0);
+          is_encoder_inited = true;
+          if (dump_how_many_images > 0) VRENC::VREnc_DumpEnable(".");
+          offload_evt = CreateEvent(nullptr, false, false, nullptr);
+          assert(offload_evt != nullptr);
+          vrwn_handle_intex = VRWN_ConstructHandle("com_vr_rendermanager.config.json");
+          // Trigger offloading thread
+          thread_offloading.swap(std::thread(OffloadMainLoop));
+        }
+#endif
         // Record that we registered our render buffers.
         m_renderBuffersRegistered = true;
         return true;
@@ -759,6 +868,7 @@ namespace renderkit {
         // within the required threshold.
 
         vrpn_gettimeofday(&start, nullptr);
+#ifndef WVR
         if (m_params.m_enableTimeWarp &&
             (m_params.m_maxMSBeforeVsyncTimeWarp > 0)) {
             int count = 0;
@@ -804,6 +914,7 @@ namespace renderkit {
                 ++count;
             } while (!proceed);
         }
+#endif  // WVR - Wait for Vsync
         vrpn_gettimeofday(&stop, nullptr);
         timeWaitForSync += vrpn_TimevalDurationSeconds(stop, start);
 
@@ -811,6 +922,7 @@ namespace renderkit {
         // needed to perform Time Warp.
         std::vector<RenderInfo> currentRenderInfo =
             GetRenderInfoInternal(renderParams);
+#ifndef WVR
         // @todo make the depth for time warp a parameter?
         if (m_params.m_enableTimeWarp) {
             if (!ComputeAsynchronousTimeWarps(renderInfoUsed, currentRenderInfo,
@@ -820,7 +932,7 @@ namespace renderkit {
                 return false;
             }
         }
-
+#endif  // WVR - ATW
         // Render into each display, setting up the display beforehand and
         // finalizing it after.
         for (size_t display = 0; display < GetNumDisplays(); display++) {
@@ -844,7 +956,7 @@ namespace renderkit {
             }
             vrpn_gettimeofday(&stop, nullptr);
             timePresentDisplayInitialize += vrpn_TimevalDurationSeconds(stop, start);
-
+#ifndef WVR
             // Render for each eye, setting up the appropriate projection
             // and viewport.
             for (size_t eyeInDisplay = 0; eyeInDisplay < GetNumEyesPerDisplay();
@@ -937,7 +1049,13 @@ namespace renderkit {
                 vrpn_gettimeofday(&stop, nullptr);
                 timePresentEye += vrpn_TimevalDurationSeconds(stop, start);
             }
-
+#else  // Offloading
+            assert(is_needed_texcopy);
+            if (is_needed_texcopy)
+              UpdateCopyTexture(buffers);
+            UpdateRenderInfo(renderInfoUsed);
+            SetEvent(offload_evt);
+#endif  // WVR - PresentEye
             // We're done with this display.
             vrpn_gettimeofday(&start, nullptr);
             if (!PresentDisplayFinalize(swappedDisplay)) {
@@ -2176,14 +2294,7 @@ namespace renderkit {
                   << " requested DirectMode display";
               }
             } else {
-                if (p.m_asynchronousTimeWarp) {
-                    RenderManager::ConstructorParameters pTemp = p;
-                    pTemp.m_graphicsLibrary.D3D11 = nullptr;
-                    auto wrappedRm = new RenderManagerD3D11(contextParameter, pTemp);
-                    ret.reset(new RenderManagerD3D11ATW(contextParameter, p, wrappedRm));
-                } else {
-                    ret.reset(new RenderManagerD3D11(contextParameter, p));
-                }
+              ret.reset(new RenderManagerD3D11(contextParameter, p));
             }
 #else
               m_log->error() << "D3D11 render library not compiled in";
@@ -2284,6 +2395,50 @@ namespace renderkit {
         // Return the render manager.
         return ret.release();
     }
+#ifdef WVR
+    void UpdateCopyTexture(const std::vector<RenderBuffer> &buffers) {
+      ID3D11Device *dev = nullptr;
+      ID3D11DeviceContext *con = nullptr;
+      if (buffers.size() == 0) return;
+      buffers[0].D3D11->colorBuffer->GetDevice(&dev);
+      if (!dev) return;
+      dev->GetImmediateContext(&con);
+      if (!con) return;
+      auto rit = buffers.begin();
+      auto dit = dup_eye_buffer.begin();
+      for (; rit != buffers.end(); ++rit, ++dit) {
+        con->CopyResource(*dit, rit->D3D11->colorBuffer);
+      }
+    }
 
+    void UpdateRenderInfo(const std::vector<RenderInfo> &renderInfoUsed) {
+      for (int i = 0; i < 4; ++i)
+        frameinfo.pose.quat_raw[i] = (float)renderInfoUsed[0].pose.rotation.data[i];
+      for (int i = 0; i < 3; ++i)
+        frameinfo.pose.tran_raw[i] = (float)renderInfoUsed[0].pose.translation.data[i];
+    }
+
+    void OffloadMainLoop() {
+      do {
+        DWORD wait = WaitForSingleObject(offload_evt, 500);
+        if (wait != WAIT_OBJECT_0) {
+          Sleep(1);
+          continue;
+        }
+        VRENC::VREnc_Encode(0);
+        void *encoded_buffers[2];
+        std::vector<int> encoded_size(2);
+        VRENC::VREnc_Fetch(
+          &encoded_buffers[0],
+          &encoded_size[0],
+          &encoded_buffers[1],
+          &encoded_size[1]);
+        if (--dump_how_many_images <= 0) VRENC::VREnc_DumpDisable();
+        frameinfo.payload = (char*)encoded_buffers[0];
+        frameinfo.size = encoded_size[0];
+        int ret = VRWN_SetFrameInfo(frameinfo, vrwn_handle_intex);
+      } while (is_encoder_inited);
+    }
+#endif
 } // namespace renderkit
 } // namespace osvr
