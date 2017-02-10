@@ -709,4 +709,5 @@ if(WIN32)
       COMMENT "copy depencies ${_dep} dll"
       VERBATIM)
   endforeach()
+  mark_as_advanced(VR_LIB_ENCP VR_LIB_VRWN VR_DEP_VRWN VR_DEP_ENCP)
 endif()

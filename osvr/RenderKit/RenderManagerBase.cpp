@@ -775,8 +775,10 @@ namespace renderkit {
               temp_dev->CreateTexture2D(&rb_desc, nullptr, &tex);
               dup_eye_buffer.push_back(tex);
               VRENC::VREnc_SetSharedTexture(tex);
+              if (codec == VRENC::AVC) break;
             } else {
               VRENC::VREnc_SetSharedTexture(rb.D3D11->colorBuffer);
+              if (codec == VRENC::AVC) break;
             }
           }
           int ret = VRENC::VREnc_Init(
@@ -2406,9 +2408,9 @@ namespace renderkit {
       if (!con) return;
       auto rit = buffers.begin();
       auto dit = dup_eye_buffer.begin();
-      for (; rit != buffers.end(); ++rit, ++dit) {
+      do {
         con->CopyResource(*dit, rit->D3D11->colorBuffer);
-      }
+      } while ((++dit != dup_eye_buffer.end()) && (++rit != buffers.end()));
     }
 
     void UpdateRenderInfo(const std::vector<RenderInfo> &renderInfoUsed) {
