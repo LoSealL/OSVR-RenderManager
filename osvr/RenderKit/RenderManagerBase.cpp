@@ -98,7 +98,9 @@ Russ Taylor <russ@sensics.com>
 // Hacked includes
 #ifdef WVR
 // jpeg encoder
-#include <VREncoder/vrenc_plugin.h>
+#include <VREncoder/VREncoder.h>
+using vrenc::EncoderDesc;
+using vrenc::LayerDesc;
 // wireless interface
 #ifndef VRAPI_IMPORT
 #define VRAPI_IMPORT
@@ -285,7 +287,7 @@ namespace renderkit {
     int dump_how_many_images;
     int vrwn_handle_intex;
     HANDLE offload_evt;
-    vrwn::FrameInfo frameinfo;
+    static vrwn::FrameInfo frameinfo{};
     std::thread thread_offloading;
     std::vector<ID3D11Texture2D*> dup_eye_buffer;
 
@@ -470,7 +472,7 @@ namespace renderkit {
 #ifdef WVR
         is_encoder_inited = false;
         thread_offloading.join();
-        VRENC::VREnc_Close();
+        VREnc_Close();
         for(auto &i : dup_eye_buffer) {
           if (i) i->Release();
           i = nullptr;
@@ -732,23 +734,24 @@ namespace renderkit {
           Json::Value root;
           Json::Reader reader;
           INT quality = 100;
-          UINT codec = VRENC::JPEG;
-          UINT format = VRENC::RGB4;
+          UINT codec = vrenc::AVC;
+          UINT format = vrenc::RGB4;
           ID3D11Device *temp_dev = nullptr;
           if (cfg_file.is_open()) {
+            std::cout << "Reading from json file" << std::endl;
             reader.parse(cfg_file, root, false);
             quality = root["quality"].asInt();
             if (root["codec"].asString() == "JPEG") {
-              codec = VRENC::JPEG;
+              codec = vrenc::JPEG;
             } else if (root["codec"].asString() == "H264") {
-              codec = VRENC::AVC;
+              codec = vrenc::AVC;
             } else if (root["codec"].asString() == "AVC") {
-              codec = VRENC::AVC;
+              codec = vrenc::AVC;
             }
             if (root["format"].asString() == "RGB4") {
-              format = VRENC::RGB4;
+              format = vrenc::RGB4;
             } else if (root["format"].asString() == "NV12") {
-              format = VRENC::NV12;
+              format = vrenc::NV12;
             }
             dump_how_many_images = root["dump"].asInt();
             cfg_file.close();
@@ -769,28 +772,38 @@ namespace renderkit {
             //is_needed_texcopy = false;
             break;
           }
-          for (auto &rb : buffers) {
-            ID3D11Texture2D *tex;
-            if (is_needed_texcopy) {
-              temp_dev->CreateTexture2D(&rb_desc, nullptr, &tex);
-              dup_eye_buffer.push_back(tex);
-              VRENC::VREnc_SetSharedTexture(tex);
-              if (codec == VRENC::AVC) break;
-            } else {
-              VRENC::VREnc_SetSharedTexture(rb.D3D11->colorBuffer);
-              if (codec == VRENC::AVC) break;
-            }
-          }
-          int ret = VRENC::VREnc_Init(
-            rb_desc.Width,
-            rb_desc.Height,
-            quality,
-            codec,
-            format,
-            temp_dev);
+          LayerDesc enc_ldc[2]{};
+          EncoderDesc enc_desc{};
+          USHORT weights[2]{ 1,1 };
+          // resize;
+          enc_ldc[0].srcWidth = rb_desc.Width;
+          enc_ldc[0].srcHeight = rb_desc.Height;
+          enc_ldc[0].dstWidth = rb_desc.Width >> 1;
+          enc_ldc[0].dstHeight = rb_desc.Height >> 1;
+          enc_ldc[0].cropW = rb_desc.Width;
+          enc_ldc[0].cropH = rb_desc.Height;
+          enc_ldc[0].targetKbps = 3000;
+          // crop
+          enc_ldc[1].srcWidth = rb_desc.Width;
+          enc_ldc[1].srcHeight = rb_desc.Height;
+          enc_ldc[1].dstWidth = rb_desc.Width >> 1;
+          enc_ldc[1].dstHeight = rb_desc.Height >> 1;
+          enc_ldc[1].cropW = rb_desc.Width >> 1;
+          enc_ldc[1].cropH = rb_desc.Height >> 1;
+          enc_ldc[1].cropX = rb_desc.Width >> 2;
+          enc_ldc[1].cropY = rb_desc.Height >> 2;
+          enc_ldc[1].targetKbps = 6000;
+
+          enc_desc.numLayers = 2;
+          enc_desc.descs = enc_ldc;
+          enc_desc.weights = weights;
+          enc_desc.codec = codec;
+          enc_desc.colorFormat = format;
+          enc_desc.renderer = temp_dev;
+          int ret = VREnc_Init(enc_desc);
           if (ret < 0) return false;
           is_encoder_inited = true;
-          if (dump_how_many_images > 0) VRENC::VREnc_DumpEnable(".");
+          if (dump_how_many_images > 0) VREnc_DumpEnable(".");
           offload_evt = CreateEvent(nullptr, false, false, nullptr);
           assert(offload_evt != nullptr);
           vrwn_handle_intex = VRWN_ConstructHandle("com_vr_rendermanager.config.json");
@@ -2406,11 +2419,11 @@ namespace renderkit {
       if (!dev) return;
       dev->GetImmediateContext(&con);
       if (!con) return;
-      auto rit = buffers.begin();
-      auto dit = dup_eye_buffer.begin();
-      do {
-        con->CopyResource(*dit, rit->D3D11->colorBuffer);
-      } while ((++dit != dup_eye_buffer.end()) && (++rit != buffers.end()));
+      ID3D11Texture2D *tex[2]{};
+      VREnc_GetSharedTexture((void**)tex, 2);
+      for (int i = 0; i < 2; i++) {
+        con->CopyResource(tex[i], buffers[i].D3D11->colorBuffer);
+      }
     }
 
     void UpdateRenderInfo(const std::vector<RenderInfo> &renderInfoUsed) {
@@ -2421,24 +2434,27 @@ namespace renderkit {
     }
 
     void OffloadMainLoop() {
+      memset(&frameinfo, 0, sizeof(frameinfo));
       do {
         DWORD wait = WaitForSingleObject(offload_evt, 500);
         if (wait != WAIT_OBJECT_0) {
           Sleep(1);
           continue;
         }
-        VRENC::VREnc_Encode(0);
-        void *encoded_buffers[2];
-        std::vector<int> encoded_size(2);
-        VRENC::VREnc_Fetch(
-          &encoded_buffers[0],
-          &encoded_size[0],
-          &encoded_buffers[1],
-          &encoded_size[1]);
-        if (--dump_how_many_images <= 0) VRENC::VREnc_DumpDisable();
-        frameinfo.payload = (char*)encoded_buffers[0];
-        frameinfo.size = encoded_size[0];
-        int ret = VRWN_SetFrameInfo(frameinfo, vrwn_handle_intex);
+        void *encoded_buffers[4]{};
+        int encoded_size[4]{};
+        int actual_len = 0;
+        VREnc_Encode(encoded_buffers, encoded_size, &actual_len);
+        if (--dump_how_many_images <= 0) VREnc_DumpDisable();
+        for (int i = 0; i < actual_len; i++) {
+          if (encoded_size[i] > 0) {
+            frameinfo.payload[i] = (char*)encoded_buffers[i];
+            frameinfo.size[i] = encoded_size[i];
+            frameinfo.id++;
+          }
+        }
+        frameinfo.num = actual_len;
+        VRWN_SetFrameInfo(frameinfo, vrwn_handle_intex);
       } while (is_encoder_inited);
     }
 #endif
