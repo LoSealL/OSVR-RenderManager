@@ -403,7 +403,7 @@ int main(int argc, char* argv[]) {
         spin.translation = {};
         spin.rotation = spinQuat;
         osvr::renderkit::RenderManager::RenderParams params;
-        params.worldFromRoomAppend = &spin;
+        //params.worldFromRoomAppend = &spin;
 
         // Render into each buffer using the specified information.
         renderInfo = render->GetRenderInfo(params);

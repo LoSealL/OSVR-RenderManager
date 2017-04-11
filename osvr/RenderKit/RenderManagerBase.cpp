@@ -646,6 +646,11 @@ namespace renderkit {
         if (index < m_latchedRenderInfo.size()) {
             ret = m_latchedRenderInfo[index];
         }
+        /*m_log->info() << "Frameinfo <<< " <<
+          ret.pose.rotation.data[0] << " " <<
+          ret.pose.rotation.data[1] << " " <<
+          ret.pose.rotation.data[2] << " " <<
+          ret.pose.rotation.data[3] << " " << " >>>";*/
         return ret;
     }
 
@@ -778,8 +783,8 @@ namespace renderkit {
           // resize;
           enc_ldc[0].srcWidth = rb_desc.Width;
           enc_ldc[0].srcHeight = rb_desc.Height;
-          enc_ldc[0].dstWidth = rb_desc.Width >> 1;
-          enc_ldc[0].dstHeight = rb_desc.Height >> 1;
+          enc_ldc[0].dstWidth = rb_desc.Width >> 2;
+          enc_ldc[0].dstHeight = rb_desc.Height >> 2;
           enc_ldc[0].cropW = rb_desc.Width;
           enc_ldc[0].cropH = rb_desc.Height;
           enc_ldc[0].targetKbps = 3000;
@@ -792,7 +797,7 @@ namespace renderkit {
           enc_ldc[1].cropH = rb_desc.Height >> 1;
           enc_ldc[1].cropX = rb_desc.Width >> 2;
           enc_ldc[1].cropY = rb_desc.Height >> 2;
-          enc_ldc[1].targetKbps = 6000;
+          enc_ldc[1].targetKbps = 3000;
 
           enc_desc.numLayers = 2;
           enc_desc.descs = enc_ldc;
@@ -1640,7 +1645,7 @@ namespace renderkit {
                 // This it not an error -- they may have put in an invalid
                 // state name for the head; we just ignore that case.
             }
-
+            
             // Do prediction of where this eye will be when it is presented
             // if client-side prediction is enabled.
             if (m_params.m_clientPredictionEnabled) {
@@ -2427,8 +2432,10 @@ namespace renderkit {
     }
 
     void UpdateRenderInfo(const std::vector<RenderInfo> &renderInfoUsed) {
-      for (int i = 0; i < 4; ++i)
-        frameinfo.pose.quat_raw[i] = (float)renderInfoUsed[0].pose.rotation.data[i];
+      frameinfo.pose.quat.w = (float)osvrQuatGetW(&renderInfoUsed[0].pose.rotation);
+      frameinfo.pose.quat.x = -(float)osvrQuatGetX(&renderInfoUsed[0].pose.rotation);
+      frameinfo.pose.quat.y = -(float)osvrQuatGetY(&renderInfoUsed[0].pose.rotation);
+      frameinfo.pose.quat.z = -(float)osvrQuatGetZ(&renderInfoUsed[0].pose.rotation);
       for (int i = 0; i < 3; ++i)
         frameinfo.pose.tran_raw[i] = (float)renderInfoUsed[0].pose.translation.data[i];
     }
